@@ -53,14 +53,21 @@ func (addr *protectedAddr) TCPAddr() *net.TCPAddr {
 }
 
 // New construct a protector from the protect function and DNS server IP address.
-func New(protect Protect, dnsServerIP string) *Protector {
-	ipAddr := net.ParseIP(dnsServerIP)
-	if ipAddr == nil {
-		log.Debugf("Invalid DNS server IP %s, default to %s", dnsServerIP, defaultDNSServer)
-		ipAddr = net.ParseIP(defaultDNSServer)
+func New(protect Protect, dnsServer string) *Protector {
+	var ipAddr *net.IP
+	var port int
+	host, p, err := net.SplitHostPort(dnsServer)
+	if err != nil {
+		log.Errorf("Invalid DNS server address %s: %v", dnsServer, err)
+	} else {
+		ipAddr = net.ParseIP(host)
+		port = p
 	}
-
-	dnsAddr := syscall.SockaddrInet4{Port: dnsPort}
+	if ipAddr == nil {
+		ipAddr = net.ParseIP(defaultDNSServer)
+		port = dnsPort
+	}
+	dnsAddr := syscall.SockaddrInet4{Port: port}
 	copy(dnsAddr.Addr[:], ipAddr.To4())
 	return &Protector{protect, &dnsAddr}
 }
