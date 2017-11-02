@@ -66,6 +66,7 @@ func New(protect Protect, dnsServer string) *Protector {
 		ipAddr = net.ParseIP(defaultDNSServer)
 		port = dnsPort
 	}
+	log.Debugf("Using dns server %v:%v", ipAddr, port)
 	dnsAddr := syscall.SockaddrInet4{Port: port}
 	copy(dnsAddr.Addr[:], ipAddr.To4())
 	return &Protector{protect, &dnsAddr}
