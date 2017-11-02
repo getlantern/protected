@@ -168,7 +168,7 @@ func (p *Protector) resolve(network string, addr string) (*protectedAddr, error)
 
 	setQueryTimeouts(fileConn)
 
-	log.Debugf("lookup %s via %s", host, p.dnsAddr)
+	log.Debugf("lookup %s via %v", host, p.dnsAddr)
 	result, err := dnsLookup(host, fileConn)
 	if err != nil {
 		return nil, errors.New("Error doing DNS resolution: %v", err)
