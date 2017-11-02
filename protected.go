@@ -53,14 +53,21 @@ func (addr *protectedAddr) TCPAddr() *net.TCPAddr {
 }
 
 // New construct a protector from the protect function and DNS server IP address.
-func New(protect Protect, dnsServerIP string) *Protector {
-	ipAddr := net.ParseIP(dnsServerIP)
-	if ipAddr == nil {
-		log.Debugf("Invalid DNS server IP %s, default to %s", dnsServerIP, defaultDNSServer)
-		ipAddr = net.ParseIP(defaultDNSServer)
+func New(protect Protect, dnsServer string) *Protector {
+	var ipAddr net.IP
+	host, port, err := splitHostPort(dnsServer)
+	if err != nil {
+		log.Errorf("Invalid DNS server address %s: %v", dnsServer, err)
+	} else {
+		ipAddr = net.ParseIP(host)
 	}
-
-	dnsAddr := syscall.SockaddrInet4{Port: dnsPort}
+	if ipAddr == nil {
+		log.Debugf("Using default DNS server: %v", defaultDNSServer)
+		ipAddr = net.ParseIP(defaultDNSServer)
+		port = dnsPort
+	}
+	log.Debugf("Using dns server %v:%v", ipAddr, port)
+	dnsAddr := syscall.SockaddrInet4{Port: port}
 	copy(dnsAddr.Addr[:], ipAddr.To4())
 	return &Protector{protect, &dnsAddr}
 }
@@ -161,7 +168,7 @@ func (p *Protector) resolve(network string, addr string) (*protectedAddr, error)
 
 	setQueryTimeouts(fileConn)
 
-	log.Debugf("lookup %s via %s", host, p.dnsAddr)
+	log.Debugf("lookup %s via %v", host, p.dnsAddr)
 	result, err := dnsLookup(host, fileConn)
 	if err != nil {
 		return nil, errors.New("Error doing DNS resolution: %v", err)
