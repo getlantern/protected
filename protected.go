@@ -54,16 +54,15 @@ func (addr *protectedAddr) TCPAddr() *net.TCPAddr {
 
 // New construct a protector from the protect function and DNS server IP address.
 func New(protect Protect, dnsServer string) *Protector {
-	var ipAddr *net.IP
-	var port int
-	host, p, err := net.SplitHostPort(dnsServer)
+	var ipAddr net.IP
+	host, port, err := splitHostPort(addr)
 	if err != nil {
 		log.Errorf("Invalid DNS server address %s: %v", dnsServer, err)
 	} else {
 		ipAddr = net.ParseIP(host)
-		port = p
 	}
 	if ipAddr == nil {
+		log.Debugf("Using default DNS server: %v", defaultDNSServer)
 		ipAddr = net.ParseIP(defaultDNSServer)
 		port = dnsPort
 	}
