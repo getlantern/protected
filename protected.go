@@ -55,7 +55,7 @@ func (addr *protectedAddr) TCPAddr() *net.TCPAddr {
 // New construct a protector from the protect function and DNS server IP address.
 func New(protect Protect, dnsServer string) *Protector {
 	var ipAddr net.IP
-	host, port, err := splitHostPort(addr)
+	host, port, err := splitHostPort(dnsServer)
 	if err != nil {
 		log.Errorf("Invalid DNS server address %s: %v", dnsServer, err)
 	} else {
