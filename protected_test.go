@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/getlantern/golog"
+	"github.com/getlantern/netx"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -50,7 +51,13 @@ func doTestConnectIP(t *testing.T, dnsServer string) {
 				if err != nil {
 					return nil, err
 				}
-				return pt.Dial(netw, resolved.String())
+				conn, err := pt.Dial(netw, resolved.String())
+				if assert.NoError(t, err) {
+					assert.True(t, IsTCPProtected(conn))
+					_, isNetxWrapped := conn.(netx.WrappedConn)
+					assert.True(t, isNetxWrapped)
+				}
+				return conn, err
 			},
 			ResponseHeaderTimeout: time.Second * 2,
 		},

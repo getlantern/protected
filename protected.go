@@ -238,7 +238,7 @@ func (p *Protector) DialContext(ctx context.Context, network, addr string) (net.
 	case <-ctx.Done():
 		return nil, op.FailIf(ctx.Err())
 	case <-chDone:
-		return conn, op.FailIf(err)
+		return &protectedTCPConn{conn}, op.FailIf(err)
 	}
 }
 
@@ -496,4 +496,19 @@ func noZone(addr string) string {
 		return ipMatch[1]
 	}
 	return addr
+}
+
+// IsTCPProtected checks whether the given TCP conn is protected.
+func IsTCPProtected(conn net.Conn) bool {
+	_, isProtected := conn.(*protectedTCPConn)
+	return isProtected
+}
+
+type protectedTCPConn struct {
+	net.Conn
+}
+
+// Wrapped implements the interface from netx.WrappedConn
+func (ptc *protectedTCPConn) Wrapped() net.Conn {
+	return ptc.Conn
 }
