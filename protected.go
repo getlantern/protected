@@ -183,11 +183,11 @@ func (p *Protector) resolve(network string, addr string) (*protectedAddr, error)
 	log.Debugf("lookup %v via %v", host, p.dnsAddrString)
 	result, err := dnsLookup(host, fileConn)
 	if err != nil {
-		return nil, errors.New("Error doing DNS resolution: %v", err)
+		return nil, errors.New("error resolving %v via %v: %v", host, p.dnsAddrString, err)
 	}
 	ipAddr, err := result.PickRandomIP()
 	if err != nil {
-		return nil, errors.New("No IP address available: %v", err)
+		return nil, errors.New("unable to resolve IP for %v via %v: %v", host, p.dnsAddrString, err)
 	}
 	return getProtectedAddr(network, ipAddr, port)
 }
