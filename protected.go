@@ -124,7 +124,7 @@ func (p *Protector) ResolveUDP(network, addr string) (*net.UDPAddr, error) {
 	return resolved.UDPAddr(), nil
 }
 
-// ResolveTCP resolves the given IP address using a DNS lookup on a UDP socket
+// ResolveIP resolves the given IP address using a DNS lookup on a UDP socket
 // protected by the given Protect function.
 func (p *Protector) ResolveIP(network string, addr string) (*net.IPAddr, error) {
 	op := ops.Begin("protected-resolve").Set("addr", addr)
@@ -285,6 +285,7 @@ func (p *Protector) DialUDP(network string, laddr, raddr *net.UDPAddr) (*net.UDP
 	return conn.(*net.UDPConn), nil
 }
 
+// DialTCP creates a new protected TCP connection using Protector.Dial
 func (p *Protector) DialTCP(network string, laddr, raddr *net.TCPAddr) (*net.TCPConn, error) {
 	op := ops.Begin("protected-dial-tcp").Set("addr", raddr.String())
 	defer op.End()
