@@ -5,6 +5,7 @@ package protected
 import (
 	"context"
 	"fmt"
+	"math/rand"
 	"net"
 	"os"
 	"regexp"
@@ -27,10 +28,11 @@ var (
 )
 
 const (
-	defaultDialTimeout = 1 * time.Minute
-	readDeadline       = 15 * time.Second
-	writeDeadline      = 15 * time.Second
-	socketError        = -1
+	defaultDialTimeout           = 1 * time.Minute
+	dnsReadTimeout               = 15 * time.Second
+	dnsWriteTimeout              = 15 * time.Second
+	dnsAdditionalResponseTimeout = 5 * time.Second
+	socketError                  = -1
 )
 
 // Protect is the actual function to protect a connection. Same signature as
@@ -38,10 +40,8 @@ const (
 type Protect func(fileDescriptor int) error
 
 type Protector struct {
-	protect       Protect
-	dnsAddr       syscall.Sockaddr
-	dnsAddrString string
-	isIPv6        bool
+	protect     Protect
+	dnsServerIP func() string
 }
 
 type protectedAddr struct {
@@ -58,47 +58,59 @@ func (addr *protectedAddr) TCPAddr() *net.TCPAddr {
 	return &net.TCPAddr{IP: addr.IP, Port: addr.Port}
 }
 
-// New construct a protector from the protect function and DNS server IP address.
-func New(protect Protect, dnsServerIP string) *Protector {
-	ipAddr := parseIP(dnsServerIP)
-	if ipAddr == nil {
-		log.Debugf("Invalid DNS server IP %s, default to %s", dnsServerIP, defaultDNSServer)
-		ipAddr = parseIP(defaultDNSServer)
-	}
-
-	dnsAddrString := fmt.Sprintf("%v:%d", ipAddr, dnsPort)
-	ipv4Addr := ipAddr.To4()
-	if ipv4Addr != nil {
-		log.Debug("Using IPv4 DNS server")
-		dnsAddr := syscall.SockaddrInet4{Port: dnsPort}
-		copy(dnsAddr.Addr[:], ipv4Addr)
-		return &Protector{protect, &dnsAddr, dnsAddrString, false}
-	}
-	log.Debug("Using IPv6 DNS server")
-	dnsAddr := syscall.SockaddrInet6{Port: dnsPort}
-	copy(dnsAddr.Addr[:], ipAddr)
-	return &Protector{protect, &dnsAddr, dnsAddrString, true}
+// New construct a protector from the protect function and function that provides a DNS server IP address.
+func New(protect Protect, dnsServerIP func() string) *Protector {
+	return &Protector{protect, dnsServerIP}
 }
 
-// ResolveTCP resolves the given TCP address using a DNS lookup on a UDP socket
+// ResolveIPs resolves the given host using a DNS lookup on a UDP socket
 // protected by the given Protect function.
-func (p *Protector) ResolveTCP(network string, addr string) (*net.TCPAddr, error) {
-	op := ops.Begin("protected-resolve").Set("addr", addr)
+func (p *Protector) ResolveIPs(host string) ([]net.IP, error) {
+	op := ops.Begin("protected-resolve-ips").Set("addr", host)
 	defer op.End()
 
-	switch network {
-	case "tcp", "tcp4", "tcp6":
-		break
-	case "":
-		network = "tcp"
-	default:
-		return nil, op.FailIf(log.Errorf("Resolve: Unsupported network: %s", network))
+	// Check if we already have the IP address
+	if ip := parseIP(host); ip != nil {
+		return []net.IP{ip}, nil
 	}
-	resolved, err := p.resolve(network, addr)
+
+	dnsAddr, dnsAddrString, family, isIPv6 := p.getDNSAddr()
+
+	// Create a datagram socket
+	socketFd, err := syscall.Socket(family, syscall.SOCK_DGRAM, 0)
 	if err != nil {
-		return nil, op.FailIf(err)
+		return nil, errors.New("Error creating socket: %v", err)
 	}
-	return resolved.TCPAddr(), nil
+	defer syscall.Close(socketFd)
+
+	// Here we protect the underlying socket from the
+	// VPN connection by passing the file descriptor
+	// back to Java for exclusion
+	err = p.protect(socketFd)
+	if err != nil {
+		return nil, errors.New("Could not bind socket to system device: %v", err)
+	}
+
+	err = syscall.Connect(socketFd, dnsAddr)
+	if err != nil {
+		return nil, errors.New("Unable to call syscall.Connect: %v", err)
+	}
+
+	fd := uintptr(socketFd)
+	file := os.NewFile(fd, "")
+	defer file.Close()
+
+	// return a copy of the network connection
+	// represented by file
+	fileConn, err := net.FileConn(file)
+	if err != nil {
+		return nil, errors.New("Error returning a copy of the network connection: %v", err)
+	}
+
+	setQueryTimeouts(fileConn)
+
+	log.Debugf("lookup %v via %v", host, dnsAddrString)
+	return dnsLookup(host, fileConn, isIPv6)
 }
 
 // ResolveUDP resolves the given UDP address using a DNS lookup on a UDP socket
@@ -126,70 +138,37 @@ func (p *Protector) resolve(network string, addr string) (*protectedAddr, error)
 		return nil, err
 	}
 
-	getProtectedAddr := func(network string, IP net.IP, port int) (*protectedAddr, error) {
-		switch network {
-		case "tcp", "tcp4", "tcp6":
-		case "udp", "udp4", "udp6":
-			break
-		default:
-			return nil, errors.New("Unsupported network: %v", network)
-		}
-		return &protectedAddr{IP: IP, Port: port}, nil
-	}
-
-	// Check if we already have the IP address
-	IPAddr := parseIP(host)
-	if IPAddr != nil {
-		return getProtectedAddr(network, IPAddr, port)
-	}
-
-	// Create a datagram socket
-	domain := syscall.AF_INET
-	if p.isIPv6 {
-		domain = syscall.AF_INET6
-	}
-	socketFd, err := syscall.Socket(domain, syscall.SOCK_DGRAM, 0)
+	ips, err := p.ResolveIPs(host)
 	if err != nil {
-		return nil, errors.New("Error creating socket: %v", err)
+		return nil, err
 	}
-	defer syscall.Close(socketFd)
 
-	// Here we protect the underlying socket from the
-	// VPN connection by passing the file descriptor
-	// back to Java for exclusion
-	err = p.protect(socketFd)
+	ip, err := pickRandomIP(ips)
 	if err != nil {
-		return nil, errors.New("Could not bind socket to system device: %v", err)
+		return nil, err
 	}
 
-	err = syscall.Connect(socketFd, p.dnsAddr)
-	if err != nil {
-		return nil, errors.New("Unable to call syscall.Connect: %v", err)
+	switch network {
+	case "tcp", "tcp4", "tcp6":
+	case "udp", "udp4", "udp6":
+		break
+	default:
+		return nil, errors.New("Unsupported network: %v", network)
+	}
+	return &protectedAddr{IP: ip, Port: port}, nil
+}
+
+func (p *Protector) getDNSAddr() (syscall.Sockaddr, string, int, bool) {
+	dnsServerIP := p.dnsServerIP()
+	ipAddr := parseIP(dnsServerIP)
+	if ipAddr == nil {
+		log.Debugf("Invalid DNS server IP %s, default to %s", dnsServerIP, defaultDNSServer)
+		ipAddr = parseIP(defaultDNSServer)
 	}
 
-	fd := uintptr(socketFd)
-	file := os.NewFile(fd, "")
-	defer file.Close()
-
-	// return a copy of the network connection
-	// represented by file
-	fileConn, err := net.FileConn(file)
-	if err != nil {
-		return nil, errors.New("Error returning a copy of the network connection: %v", err)
-	}
-
-	setQueryTimeouts(fileConn)
-
-	log.Debugf("lookup %v via %v", host, p.dnsAddrString)
-	result, err := dnsLookup(host, fileConn)
-	if err != nil {
-		return nil, errors.New("Error doing DNS resolution: %v", err)
-	}
-	ipAddr, err := result.PickRandomIP()
-	if err != nil {
-		return nil, errors.New("No IP address available: %v", err)
-	}
-	return getProtectedAddr(network, ipAddr, port)
+	dnsAddrString := fmt.Sprintf("%v:%d", ipAddr, dnsPort)
+	dnsAddr, family, isIPv4 := socketAddr(ipAddr, dnsPort)
+	return dnsAddr, dnsAddrString, family, !isIPv4
 }
 
 // Dial creates a new protected connection.
@@ -223,9 +202,6 @@ func (p *Protector) DialContext(ctx context.Context, network, addr string) (net.
 	chDone := make(chan bool)
 	go func() {
 		conn, err = p.dialContext(op, ctx, network, addr)
-		if err != nil {
-			log.Errorf("Could not dial %s %s: %v", network, addr, err)
-		}
 		select {
 		case chDone <- true:
 		default:
@@ -288,13 +264,12 @@ func (p *Protector) dialContext(op ops.Op, ctx context.Context, network, addr st
 		// continue
 	}
 
-	sockAddr := syscall.SockaddrInet4{Port: raddr.Port}
-	copy(sockAddr.Addr[:], raddr.IP.To4())
-	socketFd, err := syscall.Socket(syscall.AF_INET, socketType, 0)
+	sockAddr, family, _ := socketAddr(raddr.IP, raddr.Port)
+	socketFd, err := syscall.Socket(family, socketType, 0)
 	if err != nil {
 		return nil, errors.New("Could not create socket: %v", err)
 	}
-	conn := &protectedConn{sockAddr: &sockAddr, socketFd: socketFd}
+	conn := &protectedConn{sockAddr: sockAddr, socketFd: socketFd}
 	defer conn.cleanup()
 
 	// Actually protect the underlying socket here
@@ -462,8 +437,8 @@ func (conn *protectedConn) Close() (err error) {
 // configure DNS query expiration
 func setQueryTimeouts(c net.Conn) {
 	now := time.Now()
-	c.SetReadDeadline(now.Add(readDeadline))
-	c.SetWriteDeadline(now.Add(writeDeadline))
+	c.SetReadDeadline(now.Add(dnsReadTimeout))
+	c.SetWriteDeadline(now.Add(dnsWriteTimeout))
 }
 
 // splitHostAndPort is a wrapper around net.SplitHostPort that also uses strconv
@@ -496,4 +471,25 @@ func noZone(addr string) string {
 		return ipMatch[1]
 	}
 	return addr
+}
+
+func socketAddr(ip net.IP, port int) (syscall.Sockaddr, int, bool) {
+	ipV4 := ip.To4()
+	isIPv4 := ipV4 != nil
+	if isIPv4 {
+		addr := &syscall.SockaddrInet4{Port: port}
+		copy(addr.Addr[:], ipV4)
+		return addr, syscall.AF_INET, true
+	}
+	addr := &syscall.SockaddrInet6{Port: port}
+	copy(addr.Addr[:], ip)
+	return addr, syscall.AF_INET6, false
+}
+
+func pickRandomIP(ips []net.IP) (net.IP, error) {
+	length := len(ips)
+	if length < 1 {
+		return nil, errors.New("no IP address")
+	}
+	return ips[rand.Intn(length)], nil
 }

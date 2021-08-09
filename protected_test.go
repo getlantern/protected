@@ -13,7 +13,7 @@ import (
 )
 
 const (
-	testAddr = "example.com:80"
+	testAddr = "www.google.com:443"
 )
 
 type testprotector struct {
@@ -42,14 +42,15 @@ func TestConnectIPv6(t *testing.T) {
 
 func doTestConnectIP(t *testing.T, dnsServer string) {
 	p := &testprotector{}
-	pt := New(p.Protect, dnsServer)
+	pt := New(p.Protect, func() string { return dnsServer })
 	client := &http.Client{
 		Transport: &http.Transport{
 			Dial: func(netw, addr string) (net.Conn, error) {
-				resolved, err := pt.ResolveTCP("tcp", addr)
+				_resolved, err := pt.resolve("tcp", addr)
 				if err != nil {
 					return nil, err
 				}
+				resolved := _resolved.TCPAddr()
 				return pt.Dial(netw, resolved.String())
 			},
 			ResponseHeaderTimeout: time.Second * 2,
@@ -63,7 +64,7 @@ func doTestConnectIP(t *testing.T, dnsServer string) {
 
 func TestConnectHost(t *testing.T) {
 	p := &testprotector{}
-	pt := New(p.Protect, "8.8.8.8")
+	pt := New(p.Protect, func() string { return "8.8.8.8" })
 	client := &http.Client{
 		Transport: &http.Transport{
 			Dial: func(netw, addr string) (net.Conn, error) {
@@ -79,7 +80,7 @@ func TestConnectHost(t *testing.T) {
 }
 
 func TestDialUDP(t *testing.T) {
-	l, err := net.ListenPacket("udp", ":53243")
+	l, err := net.ListenPacket("udp4", "127.0.0.1:53243")
 	if !assert.NoError(t, err) {
 		return
 	}
@@ -94,7 +95,7 @@ func TestDialUDP(t *testing.T) {
 	}()
 
 	p := &testprotector{}
-	pt := New(p.Protect, "8.8.8.8")
+	pt := New(p.Protect, func() string { return "8.8.8.8" })
 	conn, err := pt.Dial("udp", l.LocalAddr().String())
 	if !assert.NoError(t, err) {
 		return
@@ -130,7 +131,7 @@ func TestListenUDP(t *testing.T) {
 	}()
 
 	p := &testprotector{}
-	pt := New(p.Protect, "8.8.8.8")
+	pt := New(p.Protect, func() string { return "8.8.8.8" })
 
 	conn, err := pt.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4zero, Port: 0})
 	if !assert.NoError(t, err) {
@@ -154,7 +155,7 @@ func TestListenUDP(t *testing.T) {
 func sendTestRequest(client *http.Client, addr string) error {
 	log := golog.LoggerFor("protected")
 
-	req, err := http.NewRequest("GET", "http://"+addr+"/", nil)
+	req, err := http.NewRequest("GET", "https://"+addr+"/humans.txt", nil)
 	if err != nil {
 		return fmt.Errorf("Error constructing new HTTP request: %s", err)
 	}
