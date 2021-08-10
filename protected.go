@@ -58,6 +58,10 @@ func (addr *protectedAddr) TCPAddr() *net.TCPAddr {
 	return &net.TCPAddr{IP: addr.IP, Port: addr.Port}
 }
 
+func (addr *protectedAddr) IPAddr() *net.IPAddr {
+	return &net.IPAddr{IP: addr.IP, Zone: addr.Zone}
+}
+
 // New construct a protector from the protect function and DNS server IP address.
 func New(protect Protect, dnsServerIP string) *Protector {
 	ipAddr := parseIP(dnsServerIP)
@@ -118,6 +122,27 @@ func (p *Protector) ResolveUDP(network, addr string) (*net.UDPAddr, error) {
 		return nil, op.FailIf(err)
 	}
 	return resolved.UDPAddr(), nil
+}
+
+// ResolveIP resolves the given IP address using a DNS lookup on a UDP socket
+// protected by the given Protect function.
+func (p *Protector) ResolveIP(network string, addr string) (*net.IPAddr, error) {
+	op := ops.Begin("protected-resolve").Set("addr", addr)
+	defer op.End()
+
+	switch network {
+	case "ip", "ip4", "ip6":
+		break
+	case "":
+		network = "ip"
+	default:
+		return nil, op.FailIf(log.Errorf("Resolve: Unsupported network: %s", network))
+	}
+	resolved, err := p.resolve(network, addr)
+	if err != nil {
+		return nil, op.FailIf(err)
+	}
+	return resolved.IPAddr(), nil
 }
 
 func (p *Protector) resolve(network string, addr string) (*protectedAddr, error) {
@@ -258,6 +283,25 @@ func (p *Protector) DialUDP(network string, laddr, raddr *net.UDPAddr) (*net.UDP
 		return nil, op.FailIf(err)
 	}
 	return conn.(*net.UDPConn), nil
+}
+
+// DialTCP creates a new protected TCP connection using Protector.Dial
+func (p *Protector) DialTCP(network string, laddr, raddr *net.TCPAddr) (*net.TCPConn, error) {
+	op := ops.Begin("protected-dial-tcp").Set("addr", raddr.String())
+	defer op.End()
+	switch network {
+	case "tcp", "tcp4", "tcp6":
+		// verify we have a tcp network
+		break
+	default:
+		return nil, op.FailIf(log.Errorf("Unable to dial %v ; unsupported network: %v", raddr, network))
+	}
+	// Try to resolve it
+	conn, err := p.Dial(network, raddr.String())
+	if err != nil {
+		return nil, op.FailIf(err)
+	}
+	return conn.(*net.TCPConn), nil
 }
 
 // dialContext checks if context has been done between each phase to avoid
