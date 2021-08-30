@@ -333,7 +333,8 @@ func (p *Protector) listenUDP(network string, laddr *net.UDPAddr) (*net.UDPConn,
 		return nil, errors.New("Unsupported network: %v", network)
 	}
 
-	socketFd, err := syscall.Socket(syscall.AF_INET, syscall.SOCK_DGRAM, syscall.IPPROTO_UDP)
+	sockAddr, family, _ := socketAddr(&net.IPAddr{IP: laddr.IP}, laddr.Port)
+	socketFd, err := syscall.Socket(family, syscall.SOCK_DGRAM, syscall.IPPROTO_UDP)
 	if err != nil {
 		return nil, errors.New("Could not create socket: %v", err)
 	}
@@ -347,9 +348,7 @@ func (p *Protector) listenUDP(network string, laddr *net.UDPAddr) (*net.UDPConn,
 			socketFd, err)
 	}
 
-	sa := &syscall.SockaddrInet4{Port: laddr.Port}
-	copy(sa.Addr[:], laddr.IP.To4())
-	err = syscall.Bind(socketFd, sa)
+	err = syscall.Bind(socketFd, sockAddr)
 	if err != nil {
 		return nil, errors.New("Unable to bind socket with fd %v: %v",
 			socketFd, err)
